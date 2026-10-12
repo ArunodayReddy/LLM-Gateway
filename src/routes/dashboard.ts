@@ -95,6 +95,7 @@ async function load() {
     ["Spend", money(u.totalCostUsd), ""],
     ["Cache hits", u.cacheHits, "good"],
     ["Saved by cache", money(u.dollarsSaved), "good"],
+    ["Rate limit", u.rateLimit.remaining + " / " + u.rateLimit.limit + " left", ""],
   ];
   $("cards").innerHTML = cards.map(([l, v, cls]) =>
     '<div class="card"><div class="label">' + l + '</div><div class="value ' + cls + '">' + v + "</div></div>"

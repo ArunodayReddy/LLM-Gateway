@@ -42,4 +42,11 @@ export const config = {
   // the single M1 provider env vars when PROVIDERS is unset.
   providers: parseProviders(process.env) as ProviderDef[],
   upstreamTimeoutMs: Number(optional("UPSTREAM_TIMEOUT_MS", "30000")),
+  // Rate limiting (M6): fixed-window per-key request caps. Burst is a flat
+  // grace allowance on top of the per-minute limit (not a token bucket).
+  rateLimitRequestsPerMinute: Number(
+    optional("RATE_LIMIT_REQUESTS_PER_MINUTE", "60"),
+  ),
+  rateLimitBurst: Number(optional("RATE_LIMIT_BURST", "10")),
+  rateLimitWindowMs: Number(optional("RATE_LIMIT_WINDOW_SECONDS", "60")) * 1000,
 };

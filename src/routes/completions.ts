@@ -5,6 +5,7 @@ import type { AppEnv } from "../env.js";
 import { logRequest, getMonthSpendUsd } from "../db.js";
 import { estimateCostUsd } from "../pricing.js";
 import { cacheKeyFor, getCache } from "../cache.js";
+import { getRateLimiter } from "../ratelimit.js";
 import { fetchWithFailover } from "../providers.js";
 import {
   extractPromptText,
@@ -56,11 +57,29 @@ function requestModel(body: unknown): string {
  *       caps (402) after the cache lookup; PII redaction on all log rows
  *   M5  + ordered provider list with failover (network error / timeout /
  *       5xx); provider name recorded per row; 502 only if all fail
+ *   M6  + fixed-window per-key rate limiting (429) — runs first, right
+ *       after auth, so every request counts, including cache hits
  */
 completions.post("/", auth, async (c) => {
   const started = Date.now();
   const requestId = c.get("requestId");
   const keyPrefix = c.get("apiKey").slice(0, 8);
+
+  // M6: rate limit before anything else (even body parsing). Unauthenticated
+  // requests never reach this middleware, so 401s don't consume quota.
+  // Rejected requests are still logged (status 429) like every other stage.
+  const rlState = await getRateLimiter().check(keyPrefix);
+  if (!rlState.allowed) {
+    logRequest({
+      keyPrefix, model: "unknown", promptTokens: null, completionTokens: null,
+      costUsd: 0, latencyMs: Date.now() - started, status: 429, cached: 0, provider: null,
+    });
+    c.header("Retry-After", String(rlState.retryAfterSec));
+    return c.json(
+      { error: "rate limit exceeded", retry_after: rlState.retryAfterSec },
+      429,
+    );
+  }
 
   let body: unknown;
   try {

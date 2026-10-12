@@ -379,3 +379,88 @@ the harness before the code.*
 - *Title:* My AI Gateway Routes Around Outages (M5 — Final)
 - *Caption:* Final milestone: ordered multi-provider failover on network errors, timeouts, and 5xx — never on 4xx. 502 only when all fail. Full arc: front door → ledger → cache → guardrails → failover. #BuildInPublic #LLM #AIEngineering
 - *Hashtags:* #BuildInPublic #LLM #AIEngineering #Reliability #TypeScript
+
+---
+
+## M6 — Per-key rate limiting (2026-10-12)
+
+### What shipped
+
+- `src/ratelimit.ts`: `RateLimiter` interface with check-and-consume plus
+  non-consuming `peek`. Fixed-window per-key counters: `RATE_LIMIT_REQUESTS_PER_MINUTE`
+  (default 60) + `RATE_LIMIT_BURST` (default 10) flat grace allowance.
+  `RATE_LIMIT_WINDOW_SECONDS` (default 60) makes the window configurable.
+- Backend follows the cache's Redis-or-memory pattern: atomic `INCR` +
+  `EXPIRE` on `llmgw:rl:<keyPrefix>:<window>` when `REDIS_URL` is set (safe
+  across gateway instances), in-memory `Map` otherwise. Fail-open on Redis
+  errors — a down limiter never 429s everyone.
+- Enforcement sits right after auth, before body parsing: every request
+  counts (streaming too, cache hits too, malformed JSON too). Unauthenticated
+  401s never reach the limiter, so they don't consume quota.
+- Over the cap → `429 { error: "rate limit exceeded", retry_after: N }` with
+  a `Retry-After` header (seconds to window reset). 429s are logged to
+  SQLite like every other stage.
+- `GET /v1/usage` now includes `rateLimit: { limit, remaining, resetAt }`
+  for the calling key; the dashboard shows a "Rate limit" card.
+- Verified: `tsc --noEmit` clean; smoke matrix — 7 allowed then 429s with
+  correct `Retry-After` header and body, window reset restores quota,
+  3 unauthenticated requests left `remaining` untouched, one SSE stream
+  request decremented quota by exactly 1, 429 rows present in the log store.
+
+### Why it matters
+
+Spend caps (M4) protect your wallet from runaway agents; rate limits protect
+your provider account from runaway *traffic*. A retry storm, a hot loop, or
+a leaked key hammering the gateway can burn through quotas, trigger the
+provider's own throttling, or just look like abuse. Per-key limits give every
+API key its own lane: one misbehaving client gets 429s while everyone else
+sails through. And because the limit runs before the cache, it also stops
+someone from using your gateway as a free infinite-loop machine — even
+cache hits count. This was the one piece of the original vision
+(auth → rate limits → safety → cache → routing → cost) that never got its
+own milestone. Now the architecture story is complete.
+
+### Hiccup → fix
+
+**The first smoke test lied to me.** I fired 9 requests at a 5+2 limit and
+expected 7 allowed + 2 rejected — and got exactly that. Then the very next
+check, milliseconds later, returned 200-style behavior where I expected a
+429. For a moment the limiter looked broken. It wasn't: my test window was
+3 seconds and the window had rolled over between the two shell commands.
+The limiter was right; my test harness was racing the clock.
+*Lesson: when testing time-based behavior, assert inside the window or
+control the clock — don't trust two shell commands to land in the same
+3 seconds.*
+(The fix for the test: `RATE_LIMIT_WINDOW_SECONDS` exists precisely so
+tests can use a tiny window deliberately, and the real assertions all run
+back-to-back within one window.)
+
+### Content pack
+
+**LinkedIn post:**
+> Milestone 6 of my LLM gateway — the one the original design always called
+> for: per-key rate limiting.
+>
+> Fixed window, 60 requests/minute per key plus a 10-request burst allowance.
+> Over the cap → 429 with a Retry-After header. It runs before everything —
+> even cache hits count, because a hot loop on cached responses is still
+> abuse. 401s never consume quota. Redis-backed (atomic INCR) when
+> configured, in-memory otherwise, fail-open if Redis is down.
+>
+> Spend caps protect your wallet; rate limits protect your provider account.
+> The full arc is now: auth → rate limit → safety → cache → budgets →
+> failover → cost accounting. One repo, zero broken clients.
+> #BuildInPublic #LLM #AIEngineering
+
+**Reel script (~55s):**
+- *Hook:* "Your API key is a credit card. I gave mine a speed limit."
+- *Beat 1:* "Milestone 6 of my gateway: per-key rate limiting. 60 requests a minute, plus a burst allowance. Go over? 429 — try again in N seconds."
+- *Beat 2:* "It runs before everything. Even cache hits count — a hot loop on free responses is still abuse. But failed logins never eat your quota."
+- *Beat 3:* "Redis-backed with atomic counters when configured, in-memory otherwise. And if Redis dies, it fails open — never 429s everyone by accident."
+- *Payoff:* "Spend caps protect your wallet, rate limits protect your provider account. Full arc complete: auth, rate limit, safety, cache, budgets, failover. Follow for the live demo next."
+- *On-screen text:* "60/min per key" → "429 + Retry-After" → "cache hits count too" → "fail-open on Redis down" → "Next: live demo"
+
+**YouTube Shorts:**
+- *Title:* My AI Gateway Got a Speed Limit (M6)
+- *Caption:* Milestone 6: fixed-window per-key rate limiting — 60/min + burst, 429 with Retry-After, enforced before everything (cache hits count, 401s don't). Redis or in-memory, fail-open. Full gateway arc complete. #BuildInPublic #LLM #AIEngineering
+- *Hashtags:* #BuildInPublic #LLM #AIEngineering #TypeScript #APIDesign

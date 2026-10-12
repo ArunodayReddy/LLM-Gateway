@@ -2,14 +2,20 @@
 
 An OpenAI-compatible LLM gateway. Point any OpenAI SDK at it with one config
 change (`baseURL`) and get auth, safety filters, caching, spend caps,
-multi-provider failover, and cost accounting — the whole arc, milestones 1–5.
+multi-provider failover, and cost accounting — the whole arc, milestones 1–6.
 
 ## What it does
 
 - `POST /v1/chat/completions` — OpenAI-compatible. Pipeline per request:
-  **auth → safety blocklist → cache → spend cap → provider failover → log**.
+  **auth → rate limit → safety blocklist → cache → spend cap → provider failover → log**.
   SSE streams relay untouched (never cached; logged with null tokens).
 - **Auth**: per-key Bearer tokens, 401 on missing/unknown key.
+- **Rate limiting** (M6): fixed-window per-key caps
+  (`RATE_LIMIT_REQUESTS_PER_MINUTE`, default 60, plus `RATE_LIMIT_BURST`,
+  default 10 grace requests). Over the cap → 429 with a `Retry-After`
+  header and `{ error: "rate limit exceeded", retry_after: N }`. 401s never
+  consume quota; streaming counts the same as non-streaming. Current window
+  state is exposed on `GET /v1/usage` (`rateLimit`) and the dashboard.
 - **Safety** (M4): `BLOCKED_PATTERNS` substrings in prompts → 400;
   PII (emails, phones, SSNs) redacted from everything persisted —
   prompt/response bodies are never stored at all.
@@ -86,12 +92,15 @@ PROVIDERS='[{"name":"primary","baseUrl":"https://api.openai.com/v1","apiKey":"sk
 | `CACHE_TTL_SECONDS` | `3600` | Cache TTL |
 | `BLOCKED_PATTERNS` | — | Comma-separated prompt substrings → 400 |
 | `PER_KEY_MONTHLY_CAP_USD` | `50` | Per-key monthly spend cap → 402 |
+| `RATE_LIMIT_REQUESTS_PER_MINUTE` | `60` | Per-key requests per window → 429 |
+| `RATE_LIMIT_BURST` | `10` | Grace requests above the per-minute limit |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60` | Rate-limit window length |
 | `PORT` | `8787` | Listen port |
 
 ## Dashboard
 
 `GET /dashboard` (gateway key required) shows totals cards — requests, tokens,
-spend, **cache hits**, **dollars saved** — plus a recent-requests table
+spend, **cache hits**, **dollars saved**, **rate limit remaining** — plus a recent-requests table
 (model, tokens, cost, latency, status, cache hit/miss, serving provider) and
 a per-key spend breakdown. Single HTML file, no build step.
 
@@ -102,7 +111,7 @@ a per-key spend breakdown. Single HTML file, no build step.
 3. ✅ Redis/in-memory caching + "dollars saved" counter
 4. ✅ Safety filters (PII redaction, blocklist) + per-key spend caps
 5. ✅ Multi-provider failover
+6. ✅ Per-key rate limiting (fixed window + burst, 429 + Retry-After)
 
-Possible next: per-model routing rules, token-bucket rate limits, usage
-webhooks, multi-user dashboard auth. Full spec: `LLM Gateway — Project Spec`
+Possible next: per-model routing rules, usage webhooks, multi-user dashboard auth. Full spec: `LLM Gateway — Project Spec`
 (PDF). Per-milestone stories: `docs/build-log.md`.

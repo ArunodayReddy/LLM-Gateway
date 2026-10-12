@@ -7,6 +7,7 @@ import { completions } from "./routes/completions.js";
 import { usage } from "./routes/usage.js";
 import { dashboard } from "./routes/dashboard.js";
 import { getCache } from "./cache.js";
+import { getRateLimiter } from "./ratelimit.js";
 
 const app = new Hono<AppEnv>();
 
@@ -23,7 +24,7 @@ app.use("*", async (c, next) => {
 });
 
 app.get("/health", (c) =>
-  c.json({ ok: true, service: "llm-gateway", version: "0.2.0" }),
+  c.json({ ok: true, service: "llm-gateway", version: "0.3.0" }),
 );
 
 app.route("/v1/chat/completions", completions);
@@ -37,4 +38,5 @@ serve({ fetch: app.fetch, port: config.port }, (info) => {
   );
   console.log(`sqlite log store: ${config.dbPath}`);
   getCache(); // logs which cache backend is active (M3)
+  getRateLimiter(); // logs which rate-limiter backend is active (M6)
 });

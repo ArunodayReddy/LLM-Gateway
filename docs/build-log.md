@@ -100,3 +100,282 @@ change (`baseURL`). Nothing intelligent yet — but every future capability
 ## M5 — Multi-provider failover (planned)
 
 *Entry lands with the milestone.*
+
+---
+
+## M2 — Request-log store + cost dashboard (2026-10-12)
+
+### What shipped
+
+- SQLite log store (`src/db.ts`, `node:sqlite` — zero new native deps):
+  `request_logs(id, key_prefix, model, prompt_tokens, completion_tokens,
+  cost_usd, latency_ms, status, cached, provider, created_at)`. Only the
+  first 8 chars of a gateway key are ever persisted — full keys never touch
+  disk.
+- Cost accounting (`src/pricing.ts`): per-model USD-per-1M-tokens table;
+  unknown models log a one-time warning and record $0.
+- Logging wired into `POST /v1/chat/completions`: usage extracted from
+  non-streaming JSON responses; SSE streams relay untouched and log with
+  null tokens. 401s are never logged (unauthenticated traffic stays invisible).
+- `GET /v1/usage` (auth): totals, per-key breakdown, cache stats, last 20 rows.
+- `GET /dashboard` (auth): single-file HTML ops page — totals cards,
+  recent-requests table, per-key spend. Key entered once via localStorage;
+  no build step, no external assets.
+- Verified: stub provider returning `usage: {prompt_tokens: 100,
+  completion_tokens: 25}` → row logged at exactly $0.00003; streams logged
+  with null tokens; `/v1/usage` aggregates matched the rows.
+
+### Why it matters
+
+You can't control what you can't see. Most teams discover their LLM bill the
+way they discover a leak — when the ceiling stains. M2 makes every request,
+token, and cent visible per API key, in one dashboard. This is the foundation
+every later milestone reasons about: caching needs to know what a response
+was worth, budgets need to know what a key already spent.
+
+### Hiccup → fix
+
+**`datetime('utc', 'now')` is not a date.** The `created_at` default was
+written with the arguments backwards — `'utc'` isn't a valid timestring, so
+SQLite evaluated it to NULL and every insert died with `NOT NULL constraint
+failed`. The gateway 500'd on real requests while `/health` stayed green.
+Fix: `datetime('now')` (already UTC). *Lesson: a green health check only
+proves the process is alive — the smoke test has to touch the real path.*
+
+### Content pack
+
+**LinkedIn post:**
+> Milestone 2 of my LLM gateway: I can now see every cent.
+>
+> Every request through the gateway lands in a SQLite log — model, tokens,
+> latency, cost — keyed by API key prefix (full keys never touch disk). A
+> `/v1/usage` endpoint aggregates it, and a single-file dashboard renders
+> totals, per-key spend, and recent requests. No build step, no external deps.
+>
+> The unglamorous truth about LLM cost control: it starts with a ledger, not
+> with cleverness. You can't optimize what you can't see.
+>
+> Next: the cache — and a dashboard number I'm excited about: "dollars saved."
+>
+> #BuildInPublic #LLM #AIEngineering #TypeScript
+
+**Reel script (~55s):**
+- *Hook:* "Your AI app is spending money right now. Can you prove it isn't wasting it?"
+- *Beat 1:* "Milestone 2 of my gateway: every request gets logged — model, tokens, latency, cost. Per API key."
+- *Beat 2:* "Full keys never touch the disk. Just the first 8 characters. Enough to bill, not enough to steal."
+- *Beat 3:* "One endpoint aggregates it all. One HTML file renders the dashboard. No build step."
+- *Payoff:* "Cost control doesn't start with clever tricks. It starts with a ledger. Next milestone: the cache — and a number called 'dollars saved.' Follow for it."
+- *On-screen text:* "Where's your LLM spend going?" → "every request: logged" → "keys: prefix only" → "Next: dollars saved"
+
+**YouTube Shorts:**
+- *Title:* I Gave My AI Gateway a Ledger (M2)
+- *Caption:* Milestone 2: SQLite request logging with per-model cost accounting, a /v1/usage API, and a zero-build dashboard. Full keys never touch disk. Next: caching and the "dollars saved" counter. #BuildInPublic #LLM #AIEngineering
+- *Hashtags:* #BuildInPublic #LLM #AIEngineering #TypeScript #OpenSource
+
+---
+
+## M3 — Response cache + savings counter (2026-10-12)
+
+### What shipped
+
+- `Cache` interface (`src/cache.ts`) with two backends: **Redis** when
+  `REDIS_URL` is set (ioredis), **in-memory `Map`** otherwise. The active
+  backend is logged at boot.
+- Cache key: `sha256(model + JSON.stringify(messages))`. Only non-streaming
+  responses are cached; TTL from `CACHE_TTL_SECONDS` (default 3600).
+- Hits never touch the provider and return `x-gateway-cache: hit`.
+- Accounting: a hit logs `cached=1` with `cost_usd` set to the response's
+  estimated cost — so `dollars_saved = SUM(cost_usd WHERE cached=1)` and
+  actual spend stays clean. Both surface on `/v1/usage` and the dashboard.
+- Verified: same request twice → miss then `x-gateway-cache: hit` with
+  byte-identical body; different messages → miss; streams never cached;
+  usage showed 2 hits / $0.00006 saved against $0.00006 spent.
+
+### Why it matters
+
+This is where the gateway starts *paying for itself*. In real AI apps the
+same prompts repeat constantly — system prompts, retries, popular queries.
+Every repeat is a provider bill you already paid once. The cache turns
+repeats into a dashboard number that goes up: dollars saved. It's the first
+milestone a finance person would understand.
+
+### Hiccup → fix
+
+**ioredis's default import isn't constructable.** `import Redis from
+"ioredis"` compiled under `module: NodeNext` threw "Cannot use namespace as
+a type" — the package's types export the class both ways, and the default
+interop didn't survive. Fix: `import { Redis } from "ioredis"`. Two-second
+fix, twenty-minute stare. *Lesson: when the import looks right and the
+compiler disagrees, check the .d.ts exports before anything else.*
+
+### Content pack
+
+**LinkedIn post:**
+> Milestone 3 of my LLM gateway: it now pays for itself.
+>
+> Identical prompts hit a cache (Redis when configured, in-memory otherwise)
+> keyed on model + messages — streams excluded, TTL configurable. A hit never
+> touches the provider, and the dashboard tracks the number I care about most:
+> dollars saved.
+>
+> The design decision I'm happiest with: a cache hit logs its row with the
+> *avoided* cost, so "actual spend" and "dollars saved" stay cleanly separated
+> in the same table. One table, two stories.
+>
+> Next: safety — PII redaction, prompt blocklists, and per-key spend caps. The
+> fun part where the gateway starts saying "no."
+>
+> #BuildInPublic #LLM #AIEngineering
+
+**Reel script (~55s):**
+- *Hook:* "What if your AI app got cheaper the more people used it?"
+- *Beat 1:* "Milestone 3: a response cache. Same prompt twice? The second one never touches the provider."
+- *Beat 2:* "Redis if you have it, in-memory if you don't. Streams are never cached — you can't cache a live river."
+- *Beat 3:* "And the dashboard now has my favorite number: dollars saved. Real money, not vibes."
+- *Payoff:* "Cache hits are free, so they skip every budget check downstream. Next: the milestone where the gateway learns to say no. Follow."
+- *On-screen text:* "Same prompt, twice" → "2nd one: $0" → "dollars saved: going up" → "Next: the gateway says no"
+
+**YouTube Shorts:**
+- *Title:* My AI Gateway Now Pays for Itself (M3)
+- *Caption:* Milestone 3: Redis/in-memory response caching with a "dollars saved" counter on the dashboard. Same prompt twice = second one free. Next: safety filters and spend caps. #BuildInPublic #LLM #AIEngineering
+- *Hashtags:* #BuildInPublic #LLM #AIEngineering #Redis #TypeScript
+
+---
+
+## M4 — Safety filters + spend caps (2026-10-12)
+
+### What shipped
+
+- **PII redaction** (`src/safety.ts`): emails, US-style phone numbers, and
+  SSN-like patterns are redacted in every text value written to the log
+  store. Backed by a stronger guarantee: prompt/response bodies are never
+  persisted at all — the store holds metadata only.
+- **Blocklist**: `BLOCKED_PATTERNS` env (comma-separated substrings,
+  case-insensitive) scanned against extracted prompt text *before anything
+  billable happens* → `400 { error: "request blocked by safety filter" }`.
+- **Spend caps**: `PER_KEY_MONTHLY_CAP_USD` (default 50). The key's UTC-month
+  spend is checked before proxying → `402 { error: "monthly spend cap
+  exceeded" }`. Cache hits bypass the cap (they cost $0 — blocking them
+  would be wrong).
+- All three are logged with their real statuses (400/402), PII-redacted.
+- Verified: cap of $0.00001 → first request 200, repeat served from cache,
+  new request 402; blocked substring → 400; redactor unit-tested on
+  emails/phones/SSNs.
+
+### Why it matters
+
+An API key is a credit card with no limit — until this milestone. Runaway
+agents, prompt-injection loops, and leaked keys are how AI bills go from
+annoying to career-limiting. Spend caps turn "please don't" into "can't":
+the gateway enforces the budget itself, per key, per month. The blocklist
+and PII redaction are the same idea applied to content: decide the policy
+once, in one place, instead of in every app.
+
+### Hiccup → fix
+
+**Where should the cap check live — before or after the cache?** First
+instinct was "check the budget before doing anything," but that would block
+cache hits for a key that's over cap — punishing the one request type that
+costs nothing. The check moved *after* the cache lookup: free requests
+always serve, billable ones respect the budget. *Lesson: order your pipeline
+by what each stage costs, not by how strict it feels.*
+
+### Content pack
+
+**LinkedIn post:**
+> Milestone 4 of my LLM gateway: it learned to say "no."
+>
+> Three guardrails, one pipeline position — before anything billable happens:
+> a prompt blocklist (configurable substrings → 400), per-key monthly spend
+> caps (→ 402 when exceeded), and PII redaction on everything written to the
+> log store. Prompt and response bodies are never persisted at all.
+>
+> The subtle call: the spend cap is checked *after* the cache lookup, so free
+> cache hits always serve. Budgets should block spending, not freeloading.
+>
+> An API key is a credit card with no limit. Now it has one.
+>
+> Next and last: multi-provider failover — because one provider is a single
+> point of failure. #BuildInPublic #LLM #AISecurity
+
+**Reel script (~55s):**
+- *Hook:* "Your API key is a credit card with no limit. I just gave mine one."
+- *Beat 1:* "Milestone 4: three guardrails. A blocklist that scans prompts before anything billable happens."
+- *Beat 2:* "Per-key monthly spend caps. Hit your budget? 402. The gateway says no so your wallet doesn't have to."
+- *Beat 3:* "And PII redaction — emails, phone numbers never touch the log. Actually, prompt bodies never touch the log at all."
+- *Payoff:* "The clever bit: cache hits skip the budget check, because they're free. One milestone left: what happens when your provider goes down. Follow."
+- *On-screen text:* "API key = unlimited credit card?" → "now: monthly cap" → "blocked prompts: 400" → "PII: never stored" → "Next: provider goes down"
+
+**YouTube Shorts:**
+- *Title:* My AI Gateway Learned to Say No (M4)
+- *Caption:* Milestone 4: prompt blocklists, per-key monthly spend caps (402 when exceeded), and PII redaction. Cache hits bypass the cap because they're free. Last milestone next: multi-provider failover. #BuildInPublic #LLM #AISecurity
+- *Hashtags:* #BuildInPublic #LLM #AISecurity #AIEngineering #TypeScript
+
+---
+
+## M5 — Multi-provider routing + failover (2026-10-12)
+
+### What shipped
+
+- `PROVIDERS` env: JSON array `[{name, baseUrl, apiKey}]`, tried in priority
+  order. Falls back to the single `PROVIDER_BASE_URL`/`PROVIDER_API_KEY`
+  pair when unset — M1 configs keep working untouched.
+- Failover (`src/providers.ts`): on network error, timeout
+  (`UPSTREAM_TIMEOUT_MS`, default 30s, via `AbortController`), or HTTP 5xx,
+  the gateway tries the next provider. Deliberately **no failover on 4xx** —
+  a 401/429 would just repeat against the next provider.
+- 502 `{ error: "all providers failed" }` only when every provider fails.
+- The serving provider's name is recorded on every log row (schema migration
+  via `ALTER TABLE` at boot) and shown on the dashboard.
+- Verified: `[bad(500), good(200)]` → 200 served by "good", row logged with
+  `provider: "good"`; all-dead list → 502; no `PROVIDERS` env → back-compat
+  single "default" provider, 200.
+
+### Why it matters
+
+One provider is a single point of failure with a monopoly on your uptime.
+Outages, rate limits, and price hikes all argue for optionality — but every
+app hardcoding one provider's SDK can't switch without a deploy. The gateway
+makes failover a config change: list providers in priority order, and the
+front door routes around the fire. This is the milestone that turns the
+project from "cost tool" into "infrastructure."
+
+### Hiccup → fix
+
+**The test gateway booted in the wrong directory.** The back-compat check
+spawned `npx tsx src/index.ts` from `$HOME` instead of the project dir and
+died with `Cannot find module '/home/hatch/src/index.ts'` — while the
+"real" test looked broken. Two minutes of confusion, one `cd` to fix.
+*Lesson: when a smoke test fails in a way the code can't explain, suspect
+the harness before the code.*
+
+### Content pack
+
+**LinkedIn post:**
+> Milestone 5 of my LLM gateway — the last one: it routes around failure.
+>
+> `PROVIDERS` is now an ordered list. On network errors, timeouts, or 5xx,
+> the gateway fails over to the next provider automatically. No failover on
+> 4xx — a bad key would just fail twice. 502 only when everything is down.
+> Every row logs which provider served it, so the dashboard shows your
+> real traffic split.
+>
+> That's the full arc: M1 the front door → M2 the ledger → M3 the cache →
+> M4 the guardrails → M5 the failover. One config change migrates any
+> OpenAI-compatible app onto all of it.
+>
+> Five milestones, one repo, zero broken clients. What would you add next?
+> #BuildInPublic #LLM #AIEngineering
+
+**Reel script (~55s):**
+- *Hook:* "What happens to your AI app when OpenAI goes down?"
+- *Beat 1:* "Final milestone of my gateway: multi-provider failover. You list providers in order. The gateway tries each one."
+- *Beat 2:* "Network error? Timeout? 500? It moves to the next. But never on 4xx — a bad request would just fail twice."
+- *Beat 3:* "Everything down? Then — and only then — 502. Every row logs which provider served it."
+- *Payoff:* "Five milestones. Front door, ledger, cache, guardrails, failover. One repo. And any OpenAI app migrates with one config change. Series complete — what should I build next? Follow."
+- *On-screen text:* "Provider down?" → "failover: automatic" → "4xx: no retry (would fail twice)" → "5 milestones. Done." → "What next?"
+
+**YouTube Shorts:**
+- *Title:* My AI Gateway Routes Around Outages (M5 — Final)
+- *Caption:* Final milestone: ordered multi-provider failover on network errors, timeouts, and 5xx — never on 4xx. 502 only when all fail. Full arc: front door → ledger → cache → guardrails → failover. #BuildInPublic #LLM #AIEngineering
+- *Hashtags:* #BuildInPublic #LLM #AIEngineering #Reliability #TypeScript

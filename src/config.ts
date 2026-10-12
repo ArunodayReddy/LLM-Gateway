@@ -1,4 +1,5 @@
 import "dotenv/config";
+import { parseProviders, type ProviderDef } from "./providers.js";
 
 function required(name: string): string {
   const v = process.env[name];
@@ -25,4 +26,20 @@ export const config = {
       .map((k) => k.trim())
       .filter(Boolean),
   ),
+  // SQLite request-log store (M2). Directory is created on boot.
+  dbPath: optional("DB_PATH", "./data/gateway.db"),
+  // Response cache (M3). Redis when set, in-memory Map otherwise.
+  redisUrl: process.env["REDIS_URL"] ?? "",
+  cacheTtlSeconds: Number(optional("CACHE_TTL_SECONDS", "3600")),
+  // Safety (M4): comma-separated substrings blocked in prompts (case-insensitive).
+  blockedPatterns: (process.env["BLOCKED_PATTERNS"] ?? "")
+    .split(",")
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean),
+  // Budgets (M4): per-key calendar-month spend cap in USD.
+  perKeyMonthlyCapUsd: Number(optional("PER_KEY_MONTHLY_CAP_USD", "50")),
+  // Multi-provider (M5): ordered provider list with failover. Falls back to
+  // the single M1 provider env vars when PROVIDERS is unset.
+  providers: parseProviders(process.env) as ProviderDef[],
+  upstreamTimeoutMs: Number(optional("UPSTREAM_TIMEOUT_MS", "30000")),
 };
